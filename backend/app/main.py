@@ -11,7 +11,7 @@ from .models import Config, AnalysisResult, ChatMessage
 from .scheduler import scheduler, run_analysis_task
 from . import services # Import the services module
 
-app = FastAPI(title="GitHub Trending AI Analyst Backend", version="2.0.0 (AI-Powered Intent Parsing)")
+app = FastAPI(title="GitHub Trending AI Analyst Backend", version="2.2.0 (AI Entity Recognition + Backend Calculation)")
 
 # ... (CORS middleware remains the same)
 origins = [ "http://localhost", "http://localhost:5173", "http://127.0.0.1:5173" ]
@@ -56,14 +56,22 @@ def get_results_from_db(session: Session = Depends(get_session)):
     results = session.exec(statement).all()
     return results
 
-# UPDATED: The entire chat handler is now refactored.
+def preprocess_message_for_ai(message: str) -> str:
+    """Replaces Chinese number words and units with Arabic numerals for better AI parsing."""
+    replacements = { "一个半": "1.5", "半": "0.5", "一": "1", "二": "2", "两": "2", "三": "3", "四": "4", "五": "5", "六": "6", "七": "7", "八": "8", "九": "9", "十": "10", }
+    for old, new in replacements.items():
+        message = message.replace(old, new)
+    return message
+
 @app.post("/api/chat")
 async def handle_chat_with_db(chat_message: ChatMessage, session: Session = Depends(get_session)):
     """
-    Handles chat messages by first parsing intent with AI, then executing changes.
+    Handles chat messages by pre-processing, parsing with AI, then executing.
     """
-    # 1. Get user's intent from AI
-    intent_data = await services.parse_intent_with_ai(chat_message.message)
+    processed_message = preprocess_message_for_ai(chat_message.message)
+    print(f"Original message: '{chat_message.message}' -> Processed message: '{processed_message}'")
+
+    intent_data = await services.parse_intent_with_ai(processed_message)
 
     if not intent_data:
         return {"reply": "抱歉，我在理解你的请求时遇到了一个问题，请稍后再试。"}
@@ -71,7 +79,6 @@ async def handle_chat_with_db(chat_message: ChatMessage, session: Session = Depe
     replies = []
     config_changed = False
     
-    # 2. Process language change intent
     new_language = intent_data.get("language")
     if new_language:
         config_to_update = session.get(Config, "trending_language")
@@ -81,10 +88,16 @@ async def handle_chat_with_db(chat_message: ChatMessage, session: Session = Depe
             config_changed = True
             replies.append(f"追踪语言已更新为 **{new_language}**。")
 
-    # 3. Process frequency change intent
-    new_interval = intent_data.get("interval_minutes")
-    if new_interval is not None:
-        interval_in_minutes = int(new_interval)
+    time_value = intent_data.get("time_value")
+    time_unit = intent_data.get("time_unit")
+    
+    if time_value is not None:
+        interval_in_minutes = 0
+        if time_unit == "hours":
+            interval_in_minutes = int(float(time_value) * 60)
+        else: # Defaults to minutes
+            interval_in_minutes = int(float(time_value))
+
         if interval_in_minutes < 1:
             replies.append("更新频率太快了！请设置一个不小于1分钟的间隔。")
         else:
@@ -101,7 +114,6 @@ async def handle_chat_with_db(chat_message: ChatMessage, session: Session = Depe
                     replies.append("抱歉，调整任务频率时出错了。")
                     print(f"Error rescheduling job: {e}")
 
-    # 4. Finalize and respond
     if config_changed:
         session.commit()
     
