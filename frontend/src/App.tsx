@@ -2,7 +2,6 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Bot, User, CornerDownLeft, Loader2, Github, Settings, Calendar, BarChart2, MessageCircle, X, Sun, Moon, Laptop, AlertTriangle } from 'lucide-react';
 
 // --- 常量定义 ---
-// 将后端API的地址定义为常量，方便管理
 const API_BASE_URL = 'http://127.0.0.1:8000';
 
 // --- Theme Management ---
@@ -47,9 +46,10 @@ interface AnalysisResult {
   community_focus: string[];
 }
 
+// UPDATED: Changed to schedule_interval_minutes and type is string
 interface AppConfig {
   trending_language: string;
-  schedule_interval_hours: number;
+  schedule_interval_minutes: string; 
 }
 
 interface Message {
@@ -59,9 +59,7 @@ interface Message {
 }
 
 // --- Helper Components ---
-// ... (StatusIndicator, ProjectCard, ChatModal, ThemeToggle components remain the same, so they are omitted for brevity. You can copy them from the previous version)
-
-// --- Helper Components with Typed Props ---
+// (StatusIndicator, ProjectCard, ChatModal, ThemeToggle components remain the same, so they are omitted for brevity)
 
 interface StatusIndicatorProps {
   lastUpdated: string;
@@ -127,7 +125,6 @@ const ProjectCard: React.FC<ProjectCardProps> = ({ project }) => (
     </div>
 );
 
-// --- Chat Modal Component ---
 interface ChatModalProps {
     isOpen: boolean;
     onClose: () => void;
@@ -208,7 +205,6 @@ const ChatModal: React.FC<ChatModalProps> = ({ isOpen, onClose, messages, input,
     );
 };
 
-// --- Theme Toggle Component ---
 interface ThemeToggleProps {
     theme: Theme;
     setTheme: (theme: Theme) => void;
@@ -256,37 +252,31 @@ const ThemeToggle: React.FC<ThemeToggleProps> = ({ theme, setTheme }) => {
 const App: React.FC = () => {
   const [theme, setTheme] = useTheme();
   
-  // 新增：加载和错误状态
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
 
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState<string>('');
   
-  // 修改：初始状态为空，等待API获取
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [results, setResults] = useState<AnalysisResult[]>([]);
   
   const [isTyping, setIsTyping] = useState<boolean>(false);
   const [isChatOpen, setIsChatOpen] = useState<boolean>(false);
 
-  // 修改：使用useEffect从后端获取初始数据
   useEffect(() => {
     const fetchData = async () => {
+      // ... (fetchData logic remains the same)
       try {
-        // 并行获取配置和结果数据
         const [configRes, resultsRes] = await Promise.all([
           fetch(`${API_BASE_URL}/api/config`),
           fetch(`${API_BASE_URL}/api/results`)
         ]);
-
         if (!configRes.ok || !resultsRes.ok) {
           throw new Error('网络响应错误，请检查后端服务是否开启。');
         }
-
         const configData = await configRes.json();
         const resultsData = await resultsRes.json();
-        
         setConfig(configData);
         setResults(resultsData);
         setError(null);
@@ -299,15 +289,14 @@ const App: React.FC = () => {
 
     fetchData();
 
-    // 初始化欢迎消息
     setMessages([
       { id: 1, sender: 'bot', text: '你好！我是你的 GitHub 热点分析助手。' },
       { id: 2, sender: 'bot', text: '你可以跟我聊天来调整任务设置。' }
     ]);
   }, []);
   
-  // 修改：聊天函数，与后端API交互
   const handleSendMessage = async (e: React.FormEvent<HTMLFormElement>) => {
+    // ... (handleSendMessage logic remains the same)
     e.preventDefault();
     if (!input.trim() || isTyping) return;
 
@@ -331,8 +320,6 @@ const App: React.FC = () => {
         const data = await response.json();
         const botMessage: Message = { id: Date.now() + 1, sender: 'bot', text: data.reply };
         
-        // 如果后端更新了配置，前端也需要同步
-        // 简单起见，我们重新获取一次配置
         const configRes = await fetch(`${API_BASE_URL}/api/config`);
         const configData = await configRes.json();
         setConfig(configData);
@@ -348,7 +335,7 @@ const App: React.FC = () => {
   };
 
   const getTimeAgo = (date: string): string => {
-    // ... (函数内容不变)
+    // ... (function content unchanged)
     const seconds = Math.floor((new Date().getTime() - new Date(date).getTime()) / 1000);
     if (seconds < 60) return `${Math.floor(seconds)} 秒前`;
     const minutes = seconds / 60;
@@ -359,16 +346,48 @@ const App: React.FC = () => {
     return `${Math.floor(days)} 天前`;
   }
 
+  // UPDATED: Now uses minutes for calculation and is more robust
   const getNextUpdateTime = (): string => {
-      if (!results || results.length === 0 || !config) return 'N/A';
+      if (!results || results.length === 0 || !config || !config.schedule_interval_minutes) {
+          return 'N/A';
+      }
+      
+      const intervalMinutes = parseInt(config.schedule_interval_minutes, 10);
+      if (isNaN(intervalMinutes) || intervalMinutes < 1) {
+          return 'N/A';
+      }
+      
       const lastUpdate = new Date(results[0].analysis_timestamp);
-      lastUpdate.setHours(lastUpdate.getHours() + config.schedule_interval_hours);
+      lastUpdate.setMinutes(lastUpdate.getMinutes() + intervalMinutes);
       return lastUpdate.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit'});
   }
+  
+  // NEW: Function to format the interval display, now more robust
+  const formatInterval = (minutesStr: string | undefined): string => {
+      if (minutesStr === undefined || minutesStr === null || minutesStr === '') {
+          return '未知';
+      }
+      const minutes = parseInt(minutesStr, 10);
+      if (isNaN(minutes) || minutes < 1) {
+          return '未知';
+      }
 
-  // --- 渲染逻辑 ---
+      if (minutes < 60) {
+          return `${minutes} 分钟`;
+      }
+      
+      const hours = minutes / 60;
+      // Use Number.isInteger to correctly handle whole hours
+      if (Number.isInteger(hours)) {
+          return `${hours} 小时`;
+      }
+      
+      // Use parseFloat to remove trailing .0, e.g., "1.50" -> 1.5
+      return `${parseFloat(hours.toFixed(1))} 小时`;
+  };
 
-  // 加载中的UI
+
+  // --- Rendering logic with updated interval display ---
   if (isLoading) {
     return (
         <div className="bg-white dark:bg-gray-900 min-h-screen flex items-center justify-center">
@@ -377,7 +396,6 @@ const App: React.FC = () => {
     );
   }
 
-  // 错误UI
   if (error) {
       return (
           <div className="bg-white dark:bg-gray-900 min-h-screen flex flex-col items-center justify-center text-center px-4">
@@ -412,7 +430,8 @@ const App: React.FC = () => {
       <main className="container mx-auto p-4 sm:p-6 lg:p-8">
           {config && <div className="flex items-center space-x-3 mb-6">
              <Settings className="w-6 h-6 text-slate-500 dark:text-gray-400"/>
-             <h2 className="text-xl font-semibold">当前分析配置: 追踪 <span className="text-cyan-600 dark:text-cyan-400 font-bold">{config.trending_language}</span> 项目，每 <span className="text-cyan-600 dark:text-cyan-400 font-bold">{config.schedule_interval_hours}</span> 小时更新</h2>
+             {/* UPDATED: Uses formatInterval for display */}
+             <h2 className="text-xl font-semibold">当前分析配置: 追踪 <span className="text-cyan-600 dark:text-cyan-400 font-bold">{config.trending_language}</span> 项目，每 <span className="text-cyan-600 dark:text-cyan-400 font-bold">{formatInterval(config.schedule_interval_minutes)}</span> 更新</h2>
           </div>}
            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
             {results.length > 0 ? results.map((project) => (
