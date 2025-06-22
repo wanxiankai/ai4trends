@@ -5,29 +5,22 @@
 from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from sqlmodel import Session, select
-from typing import List
+from typing import List, Optional
 from .database import create_db_and_tables, get_session, engine
 from .models import Config, AnalysisResult, ChatMessage
 from .scheduler import scheduler, run_analysis_task
+from . import services # Import the services module
 
-app = FastAPI(title="GitHub Trending AI Analyst Backend", version="1.2.1 (Improved Language Detection)")
+app = FastAPI(title="GitHub Trending AI Analyst Backend", version="2.0.0 (AI-Powered Intent Parsing)")
 
-origins = [
-    "http://localhost",
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
-]
+# ... (CORS middleware remains the same)
+origins = [ "http://localhost", "http://localhost:5173", "http://127.0.0.1:5173" ]
+app.add_middleware( CORSMiddleware, allow_origins=origins, allow_credentials=True, allow_methods=["*"], allow_headers=["*"],)
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 @app.on_event("startup")
 async def startup_event():
+    # ... (startup logic remains the same)
     print("Application starting up...")
     create_db_and_tables()
 
@@ -52,73 +45,69 @@ def shutdown_event():
 
 @app.get("/api/config")
 def get_config_from_db(session: Session = Depends(get_session)):
+    # ... (this endpoint remains the same)
     configs = session.exec(select(Config)).all()
     return {c.key: c.value for c in configs}
 
 @app.get("/api/results", response_model=List[AnalysisResult])
 def get_results_from_db(session: Session = Depends(get_session)):
+    # ... (this endpoint remains the same)
     statement = select(AnalysisResult).order_by(AnalysisResult.analysis_timestamp.desc()).limit(10)
     results = session.exec(statement).all()
     return results
 
+# UPDATED: The entire chat handler is now refactored.
 @app.post("/api/chat")
-def handle_chat_with_db(chat_message: ChatMessage, session: Session = Depends(get_session)):
-    message = chat_message.message.lower()
-    response_text = "抱歉，我不太理解你的意思。你可以尝试说：'追踪[语言]'或'频率改为[数字]分钟/小时'。"
+async def handle_chat_with_db(chat_message: ChatMessage, session: Session = Depends(get_session)):
+    """
+    Handles chat messages by first parsing intent with AI, then executing changes.
+    """
+    # 1. Get user's intent from AI
+    intent_data = await services.parse_intent_with_ai(chat_message.message)
+
+    if not intent_data:
+        return {"reply": "抱歉，我在理解你的请求时遇到了一个问题，请稍后再试。"}
+
+    replies = []
     config_changed = False
+    
+    # 2. Process language change intent
+    new_language = intent_data.get("language")
+    if new_language:
+        config_to_update = session.get(Config, "trending_language")
+        if config_to_update and config_to_update.value != new_language:
+            config_to_update.value = new_language
+            session.add(config_to_update)
+            config_changed = True
+            replies.append(f"追踪语言已更新为 **{new_language}**。")
 
-    # UPDATED: Improved language detection logic
-    if '追踪' in message or 'track' in message:
-        languages = ['javascript', 'python', 'typescript', 'go', 'rust', 'java', 'c++']
-        # Instead of splitting the message, check if any known language is a substring of the message
-        found_lang = next((lang for lang in languages if lang in message), None)
-        
-        if found_lang:
-            # Handle the "java" vs "javascript" ambiguity. Prefer the longer match.
-            if 'javascript' in message:
-                found_lang = 'javascript'
-
-            config_to_update = session.get(Config, "trending_language")
-            if config_to_update:
-                config_to_update.value = found_lang
+    # 3. Process frequency change intent
+    new_interval = intent_data.get("interval_minutes")
+    if new_interval is not None:
+        interval_in_minutes = int(new_interval)
+        if interval_in_minutes < 1:
+            replies.append("更新频率太快了！请设置一个不小于1分钟的间隔。")
+        else:
+            config_to_update = session.get(Config, "schedule_interval_minutes")
+            if config_to_update and config_to_update.value != str(interval_in_minutes):
+                config_to_update.value = str(interval_in_minutes)
                 session.add(config_to_update)
                 config_changed = True
-                response_text = f"好的！我已经将追踪的语言更新为 **{found_lang}**。"
-    
-    elif any(unit in message for unit in ['分钟', '小时', 'minute', 'hour', '频率', 'interval']):
-        import re
-        match = re.search(r'(\d+(\.\d+)?)', message)
-        
-        if match:
-            value = float(match.group(0))
-            interval_in_minutes = 0
+                try:
+                    scheduler.reschedule_job("analysis_task", trigger='interval', minutes=interval_in_minutes)
+                    replies.append(f"任务更新频率已调整为每 **{interval_in_minutes}** 分钟一次。")
+                    print(f"Task rescheduled to run every {interval_in_minutes} minutes.")
+                except Exception as e:
+                    replies.append("抱歉，调整任务频率时出错了。")
+                    print(f"Error rescheduling job: {e}")
 
-            if '小时' in message or 'hour' in message:
-                interval_in_minutes = int(value * 60)
-            else:
-                interval_in_minutes = int(value)
-            
-            if interval_in_minutes < 1:
-                response_text = "更新频率太快了！请设置一个不小于1分钟的间隔。"
-            else:
-                config_to_update = session.get(Config, "schedule_interval_minutes")
-                if config_to_update:
-                    config_to_update.value = str(interval_in_minutes)
-                    session.add(config_to_update)
-                    config_changed = True
-                    try:
-                        scheduler.reschedule_job("analysis_task", trigger='interval', minutes=interval_in_minutes)
-                        response_text = f"收到！我已经将任务更新频率调整为每 **{interval_in_minutes}** 分钟一次。"
-                        print(f"Task rescheduled to run every {interval_in_minutes} minutes.")
-                    except Exception as e:
-                        response_text = "抱歉，调整任务频率时出错了。"
-                        print(f"Error rescheduling job: {e}")
-                else:
-                    response_text = "找不到频率配置项。"
-        else:
-            response_text = "我没有找到有效的时间数字，请重试。例如：'10分钟'或'0.5小时'。"
-
+    # 4. Finalize and respond
     if config_changed:
         session.commit()
+    
+    if replies:
+        response_text = " ".join(replies)
+    else:
+        response_text = "我收到了你的消息，但似乎没有需要我调整的配置。你可以尝试说：'追踪 java' 或 '每 15 分钟更新一次'。"
 
     return {"reply": response_text}
