@@ -68,11 +68,14 @@ async def parse_intent_with_ai(user_message: str) -> Optional[dict]:
     
     valid_languages = ['javascript', 'python', 'typescript', 'go', 'rust', 'java', 'c++']
 
+    # UPDATED PROMPT: More explicit instructions for the AI
     prompt = f"""
     Analyze the user's request to find the programming language and update frequency.
-    1.  **language**: Identify the programming language. It must be one of these exact values: {valid_languages}. If not found, return null.
-    2.  **time_value**: Extract only the numerical value of the time (e.g., for "1.5 hours" extract 1.5, for "10 minutes" extract 10). If not found, return null.
-    3.  **time_unit**: Identify the unit of time. It must be either "minutes" or "hours". If a time_value is found but no unit, default to "minutes".
+    Your task is to extract entities and return a JSON object.
+
+    1.  **language**: Identify the programming language. It MUST be one of these exact values: {valid_languages}. If no valid language is mentioned, return null for this field.
+    2.  **time_value**: Extract only the numerical value of the time (e.g., for "1.5 hours" extract 1.5, for "10 minutes" extract 10). If no time is mentioned, return null.
+    3.  **time_unit**: If you extract a 'time_value', you MUST identify its unit. The unit must be either "minutes" or "hours". If no unit is explicitly mentioned with a number, infer it (e.g., 'every 30' likely means 30 minutes).
 
     User's request: "{user_message}"
 
