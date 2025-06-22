@@ -10,7 +10,7 @@ from .database import create_db_and_tables, get_session, engine
 from .models import Config, AnalysisResult, ChatMessage
 from .scheduler import scheduler, run_analysis_task
 
-app = FastAPI(title="GitHub Trending AI Analyst Backend", version="1.2.0 (Gemini with minute control)")
+app = FastAPI(title="GitHub Trending AI Analyst Backend", version="1.2.1 (Improved Language Detection)")
 
 origins = [
     "http://localhost",
@@ -31,11 +31,9 @@ async def startup_event():
     print("Application starting up...")
     create_db_and_tables()
 
-    # Get interval from DB for initial scheduling
     with Session(engine) as session:
         interval_config = session.get(Config, "schedule_interval_minutes")
         try:
-            # Use a default of 10 minutes if not found or invalid
             interval = int(interval_config.value) if interval_config else 10
         except (ValueError, TypeError):
             interval = 10
@@ -43,7 +41,6 @@ async def startup_event():
     print("Performing initial data analysis on startup...")
     await run_analysis_task()
     
-    # Schedule the job with the interval from DB
     scheduler.add_job(run_analysis_task, 'interval', minutes=interval, id="analysis_task")
     scheduler.start()
     print(f"Scheduler started. Analysis task will run every {interval} minutes.")
@@ -56,7 +53,6 @@ def shutdown_event():
 @app.get("/api/config")
 def get_config_from_db(session: Session = Depends(get_session)):
     configs = session.exec(select(Config)).all()
-    # Convert list of config objects to a dictionary
     return {c.key: c.value for c in configs}
 
 @app.get("/api/results", response_model=List[AnalysisResult])
@@ -71,10 +67,17 @@ def handle_chat_with_db(chat_message: ChatMessage, session: Session = Depends(ge
     response_text = "抱歉，我不太理解你的意思。你可以尝试说：'追踪[语言]'或'频率改为[数字]分钟/小时'。"
     config_changed = False
 
+    # UPDATED: Improved language detection logic
     if '追踪' in message or 'track' in message:
         languages = ['javascript', 'python', 'typescript', 'go', 'rust', 'java', 'c++']
-        found_lang = next((lang for lang in message.split() if lang in languages), None)
+        # Instead of splitting the message, check if any known language is a substring of the message
+        found_lang = next((lang for lang in languages if lang in message), None)
+        
         if found_lang:
+            # Handle the "java" vs "javascript" ambiguity. Prefer the longer match.
+            if 'javascript' in message:
+                found_lang = 'javascript'
+
             config_to_update = session.get(Config, "trending_language")
             if config_to_update:
                 config_to_update.value = found_lang
@@ -82,10 +85,9 @@ def handle_chat_with_db(chat_message: ChatMessage, session: Session = Depends(ge
                 config_changed = True
                 response_text = f"好的！我已经将追踪的语言更新为 **{found_lang}**。"
     
-    # UPDATED: Logic to handle minutes and hours
     elif any(unit in message for unit in ['分钟', '小时', 'minute', 'hour', '频率', 'interval']):
         import re
-        match = re.search(r'(\d+(\.\d+)?)', message) # Look for integers or floats
+        match = re.search(r'(\d+(\.\d+)?)', message)
         
         if match:
             value = float(match.group(0))
@@ -93,10 +95,9 @@ def handle_chat_with_db(chat_message: ChatMessage, session: Session = Depends(ge
 
             if '小时' in message or 'hour' in message:
                 interval_in_minutes = int(value * 60)
-            else: # Default to minutes if no unit or 'minute' is found
+            else:
                 interval_in_minutes = int(value)
             
-            # Enforce a minimum of 1 minute
             if interval_in_minutes < 1:
                 response_text = "更新频率太快了！请设置一个不小于1分钟的间隔。"
             else:
@@ -105,8 +106,6 @@ def handle_chat_with_db(chat_message: ChatMessage, session: Session = Depends(ge
                     config_to_update.value = str(interval_in_minutes)
                     session.add(config_to_update)
                     config_changed = True
-                    
-                    # Reschedule the job with the new interval
                     try:
                         scheduler.reschedule_job("analysis_task", trigger='interval', minutes=interval_in_minutes)
                         response_text = f"收到！我已经将任务更新频率调整为每 **{interval_in_minutes}** 分钟一次。"
@@ -115,7 +114,7 @@ def handle_chat_with_db(chat_message: ChatMessage, session: Session = Depends(ge
                         response_text = "抱歉，调整任务频率时出错了。"
                         print(f"Error rescheduling job: {e}")
                 else:
-                    response_text = "找不到频率配置项。" # This case shouldn't happen
+                    response_text = "找不到频率配置项。"
         else:
             response_text = "我没有找到有效的时间数字，请重试。例如：'10分钟'或'0.5小时'。"
 
