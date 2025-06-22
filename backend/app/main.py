@@ -11,7 +11,7 @@ from .models import Config, AnalysisResult, ChatMessage
 from .scheduler import scheduler, run_analysis_task
 from . import services # Import the services module
 
-app = FastAPI(title="GitHub Trending AI Analyst Backend", version="2.2.0 (AI Entity Recognition + Backend Calculation)")
+app = FastAPI(title="GitHub Trending AI Analyst Backend", version="2.3.0 (Robust Intent Handling)")
 
 # ... (CORS middleware remains the same)
 origins = [ "http://localhost", "http://localhost:5173", "http://127.0.0.1:5173" ]
@@ -68,8 +68,9 @@ async def handle_chat_with_db(chat_message: ChatMessage, session: Session = Depe
     """
     Handles chat messages by pre-processing, parsing with AI, then executing.
     """
-    processed_message = preprocess_message_for_ai(chat_message.message)
-    print(f"Original message: '{chat_message.message}' -> Processed message: '{processed_message}'")
+    original_message = chat_message.message.lower()
+    processed_message = preprocess_message_for_ai(original_message)
+    print(f"Original message: '{original_message}' -> Processed message: '{processed_message}'")
 
     intent_data = await services.parse_intent_with_ai(processed_message)
 
@@ -91,11 +92,19 @@ async def handle_chat_with_db(chat_message: ChatMessage, session: Session = Depe
     time_value = intent_data.get("time_value")
     time_unit = intent_data.get("time_unit")
     
+    # Fallback logic: If AI missed the unit, check the original message
+    if time_value is not None and time_unit is None:
+        if "小时" in original_message or "hour" in original_message:
+            time_unit = "hours"
+            print("Fallback applied: Detected 'hours' unit from original message.")
+    
     if time_value is not None:
         interval_in_minutes = 0
-        if time_unit == "hours":
+        unit_to_check = time_unit or "minutes" # Default to minutes if still no unit
+        
+        if unit_to_check == "hours":
             interval_in_minutes = int(float(time_value) * 60)
-        else: # Defaults to minutes
+        else:
             interval_in_minutes = int(float(time_value))
 
         if interval_in_minutes < 1:
@@ -123,3 +132,4 @@ async def handle_chat_with_db(chat_message: ChatMessage, session: Session = Depe
         response_text = "我收到了你的消息，但似乎没有需要我调整的配置。你可以尝试说：'追踪 java' 或 '每 15 分钟更新一次'。"
 
     return {"reply": response_text}
+
