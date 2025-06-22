@@ -10,7 +10,7 @@ from .models import AnalysisResult
 from .config import settings # Import settings to get the API key
 
 async def scrape_github_trending(language: str) -> list[dict]:
-    """Scrapes GitHub trending page for a given language."""
+    # ... (this function remains the same)
     url = f"https://github.com/trending/{language}?since=daily"
     headers = {"User-Agent": "Mozilla/5.0"}
     async with httpx.AsyncClient() as client:
@@ -36,9 +36,9 @@ async def scrape_github_trending(language: str) -> list[dict]:
     print(f"Scraped {len(repos)} repositories for language: {language}")
     return repos
 
-# FIX: Added proper indentation to the entire function body.
 async def analyze_with_ai(content: str) -> Optional[dict]:
     """Sends content to the Gemini 2.0 Flash model for analysis."""
+    # ... (this function remains the same)
     api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={settings.ai_api_key}"
     prompt = f"""
     You are a professional software engineer and tech analyst. Analyze the following repository information.
@@ -61,20 +61,52 @@ async def analyze_with_ai(content: str) -> Optional[dict]:
             return None
 
 async def parse_intent_with_ai(user_message: str) -> Optional[dict]:
-    """Uses Gemini to parse the user's message into structured intent data."""
+    """Uses Gemini to parse the user's message into structured intent data.
+    This version asks the AI to extract raw values, not to perform calculations.
+    """
     api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={settings.ai_api_key}"
     
     valid_languages = ['javascript', 'python', 'typescript', 'go', 'rust', 'java', 'c++']
+
     prompt = f"""
-    Analyze the user's request and extract two pieces of information: the programming language and the update frequency in minutes.
-    1.  **Language**: The language must be one of these exact values: {valid_languages}. If no valid language is mentioned, return null for the language.
-    2.  **Frequency**: Convert any time expression (e.g., '一个半小时', '10 minutes', 'half an hour') into a total number of minutes. If no frequency is mentioned, return null for the interval.
+    Analyze the user's request to find the programming language and update frequency.
+    1.  **language**: Identify the programming language. It must be one of these exact values: {valid_languages}. If not found, return null.
+    2.  **time_value**: Extract only the numerical value of the time (e.g., for "1.5 hours" extract 1.5, for "10 minutes" extract 10). If not found, return null.
+    3.  **time_unit**: Identify the unit of time. It must be either "minutes" or "hours". If a time_value is found but no unit, default to "minutes".
+
     User's request: "{user_message}"
-    Return a single JSON object with the keys "language" and "interval_minutes".
+
+    Return a single JSON object with the keys "language", "time_value", and "time_unit".
     """
-    json_schema = { "type": "OBJECT", "properties": { "language": { "type": "STRING", "enum": valid_languages, "description": "The programming language to track." }, "interval_minutes": { "type": "NUMBER", "description": "The update frequency converted to total minutes." } } }
+
+    json_schema = {
+        "type": "OBJECT",
+        "properties": {
+            "language": {
+                "type": "STRING",
+                "enum": valid_languages,
+                "description": "The programming language to track. Null if not present."
+            },
+            "time_value": {
+                "type": "NUMBER",
+                "description": "The numeric value for the time interval. Null if not present."
+            },
+            "time_unit": {
+                "type": "STRING",
+                "enum": ["minutes", "hours"],
+                "description": "The unit of time for the interval."
+            }
+        },
+    }
+    
     headers = {"Content-Type": "application/json"}
-    payload = { "contents": [{"parts": [{"text": prompt}]}], "generationConfig": { "responseMimeType": "application/json", "responseSchema": json_schema } }
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "responseMimeType": "application/json",
+            "responseSchema": json_schema
+        }
+    }
 
     print(f"Sending to Gemini for intent parsing: {user_message}")
     async with httpx.AsyncClient() as client:
@@ -91,3 +123,4 @@ async def parse_intent_with_ai(user_message: str) -> Optional[dict]:
             if 'response' in locals():
                 print(f"API Response Body: {response.text}")
             return None
+
