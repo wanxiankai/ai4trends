@@ -3,11 +3,11 @@
 # This file defines the scheduled jobs.
 # ===============================================================
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from sqlmodel import Session, select
+from sqlmodel import Session
 import datetime
 from .database import engine
 from .models import Config, AnalysisResult
-from .services import scrape_github_trending, analyze_with_ai
+from . import services
 
 async def run_analysis_task():
     """The complete analysis pipeline, from scraping to saving in DB."""
@@ -21,15 +21,15 @@ async def run_analysis_task():
     print(f"Current language from DB: {language}")
     
     # 1. Scrape data
-    scraped_repos = await scrape_github_trending(language)
+    scraped_repos = await services.scrape_github_trending(language)
     if not scraped_repos:
         print("Scraping failed or returned no repos. Skipping analysis.")
         return
 
     # 2. Analyze each repo and save to DB
     for repo_data in scraped_repos:
-        print(f"Analyzing {repo_data['repo_name']}...")
-        ai_result = await analyze_with_ai(repo_data["readme_content"])
+        print(f"Analyzing {repo_data['repo_name']} with Gemini...")
+        ai_result = await services.analyze_with_ai(repo_data["readme_content"])
         
         if ai_result:
             new_analysis = AnalysisResult(
