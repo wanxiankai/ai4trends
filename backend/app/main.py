@@ -4,7 +4,7 @@
 # ===============================================================
 from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from sqlmodel import Session
+from sqlmodel import Session, select
 from typing import List
 import asyncio
 
