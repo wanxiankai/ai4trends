@@ -6,16 +6,12 @@ from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from sqlmodel import Session, select
 from typing import List
-import asyncio
-
-from .database import create_db_and_tables, get_session
+from .database import create_db_and_tables, get_session, engine
 from .models import Config, AnalysisResult, ChatMessage
 from .scheduler import scheduler, run_analysis_task
 
-app = FastAPI(title="GitHub Trending AI Analyst Backend", version="1.0.0")
+app = FastAPI(title="GitHub Trending AI Analyst Backend", version="1.2.0 (Gemini with minute control)")
 
-# CORS middleware configuration (no changes)
-# ...
 origins = [
     "http://localhost",
     "http://localhost:5173",
@@ -30,53 +26,54 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
 @app.on_event("startup")
 async def startup_event():
-    """On startup, create DB, run task once immediately, then schedule it."""
     print("Application starting up...")
     create_db_and_tables()
+
+    # Get interval from DB for initial scheduling
+    with Session(engine) as session:
+        interval_config = session.get(Config, "schedule_interval_minutes")
+        try:
+            # Use a default of 10 minutes if not found or invalid
+            interval = int(interval_config.value) if interval_config else 10
+        except (ValueError, TypeError):
+            interval = 10
     
     print("Performing initial data analysis on startup...")
-    # Run the task once immediately to populate the database
     await run_analysis_task()
     
-    # Schedule the job to run every 10 minutes
-    scheduler.add_job(run_analysis_task, 'interval', minutes=10, id="analysis_task")
+    # Schedule the job with the interval from DB
+    scheduler.add_job(run_analysis_task, 'interval', minutes=interval, id="analysis_task")
     scheduler.start()
-    print("Scheduler started. Analysis task will run every 10 minutes.")
+    print(f"Scheduler started. Analysis task will run every {interval} minutes.")
 
 @app.on_event("shutdown")
 def shutdown_event():
     scheduler.shutdown()
     print("Scheduler shut down.")
 
-# API endpoints (no changes in their code)
-# ...
-
 @app.get("/api/config")
 def get_config_from_db(session: Session = Depends(get_session)):
-    """Fetches configuration from the database."""
     configs = session.exec(select(Config)).all()
+    # Convert list of config objects to a dictionary
     return {c.key: c.value for c in configs}
 
 @app.get("/api/results", response_model=List[AnalysisResult])
 def get_results_from_db(session: Session = Depends(get_session)):
-    """Fetches the latest analysis results from the database."""
     statement = select(AnalysisResult).order_by(AnalysisResult.analysis_timestamp.desc()).limit(10)
     results = session.exec(statement).all()
     return results
 
 @app.post("/api/chat")
 def handle_chat_with_db(chat_message: ChatMessage, session: Session = Depends(get_session)):
-    """Handles chat messages and updates the configuration in the database."""
     message = chat_message.message.lower()
-    response_text = "抱歉，我不太理解你的意思。你可以尝试说：'追踪[语言]'或'频率改为[数字]小时'。"
-    # ... (logic remains the same)
+    response_text = "抱歉，我不太理解你的意思。你可以尝试说：'追踪[语言]'或'频率改为[数字]分钟/小时'。"
     config_changed = False
+
     if '追踪' in message or 'track' in message:
         languages = ['javascript', 'python', 'typescript', 'go', 'rust', 'java', 'c++']
-        found_lang = next((lang for lang in languages if lang in message), None)
+        found_lang = next((lang for lang in message.split() if lang in languages), None)
         if found_lang:
             config_to_update = session.get(Config, "trending_language")
             if config_to_update:
@@ -84,19 +81,43 @@ def handle_chat_with_db(chat_message: ChatMessage, session: Session = Depends(ge
                 session.add(config_to_update)
                 config_changed = True
                 response_text = f"好的！我已经将追踪的语言更新为 **{found_lang}**。"
-
-    elif '小时' in message or '频率' in message or 'interval' in message:
+    
+    # UPDATED: Logic to handle minutes and hours
+    elif any(unit in message for unit in ['分钟', '小时', 'minute', 'hour', '频率', 'interval']):
         import re
-        match = re.search(r'\d+', message)
+        match = re.search(r'(\d+(\.\d+)?)', message) # Look for integers or floats
+        
         if match:
-            hours = int(match.group(0))
-            if hours > 0:
-                config_to_update = session.get(Config, "schedule_interval_hours")
+            value = float(match.group(0))
+            interval_in_minutes = 0
+
+            if '小时' in message or 'hour' in message:
+                interval_in_minutes = int(value * 60)
+            else: # Default to minutes if no unit or 'minute' is found
+                interval_in_minutes = int(value)
+            
+            # Enforce a minimum of 1 minute
+            if interval_in_minutes < 1:
+                response_text = "更新频率太快了！请设置一个不小于1分钟的间隔。"
+            else:
+                config_to_update = session.get(Config, "schedule_interval_minutes")
                 if config_to_update:
-                    config_to_update.value = str(hours)
+                    config_to_update.value = str(interval_in_minutes)
                     session.add(config_to_update)
                     config_changed = True
-                    response_text = f"收到！我已经将任务更新频率调整为每 **{hours}** 小时一次。"
+                    
+                    # Reschedule the job with the new interval
+                    try:
+                        scheduler.reschedule_job("analysis_task", trigger='interval', minutes=interval_in_minutes)
+                        response_text = f"收到！我已经将任务更新频率调整为每 **{interval_in_minutes}** 分钟一次。"
+                        print(f"Task rescheduled to run every {interval_in_minutes} minutes.")
+                    except Exception as e:
+                        response_text = "抱歉，调整任务频率时出错了。"
+                        print(f"Error rescheduling job: {e}")
+                else:
+                    response_text = "找不到频率配置项。" # This case shouldn't happen
+        else:
+            response_text = "我没有找到有效的时间数字，请重试。例如：'10分钟'或'0.5小时'。"
 
     if config_changed:
         session.commit()
