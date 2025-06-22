@@ -1,0 +1,4 @@
+# 确保你的后端虚拟环境已激活
+cd backend
+pip freeze > requirements.txt
+cd ..
