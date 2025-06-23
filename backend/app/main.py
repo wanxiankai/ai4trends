@@ -6,21 +6,25 @@ from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from sqlmodel import Session, select
 from typing import List, Optional
+import datetime # Import datetime for scheduling
+
 from .database import create_db_and_tables, get_session, engine
 from .models import Config, AnalysisResult, ChatMessage
 from .scheduler import scheduler, run_analysis_task
 from . import services # Import the services module
 
-app = FastAPI(title="GitHub Trending AI Analyst Backend", version="2.3.0 (Robust Intent Handling)")
+app = FastAPI(title="GitHub Trending AI Analyst Backend", version="2.4.0 (Robust Startup)")
 
-# ... (CORS middleware remains the same)
-origins = [ "http://localhost", "http://localhost:5173", "http://127.0.0.1:5173" ]
+origins = [ "http://localhost", "http://localhost:5173", "http://127.0.0.1:5173", "https://ai-trends-463709.web.app"]
 app.add_middleware( CORSMiddleware, allow_origins=origins, allow_credentials=True, allow_methods=["*"], allow_headers=["*"],)
 
 
 @app.on_event("startup")
 async def startup_event():
-    # ... (startup logic remains the same)
+    """
+    On startup, create DB, and schedule tasks to run in the background.
+    This allows the web server to start quickly without being blocked.
+    """
     print("Application starting up...")
     create_db_and_tables()
 
@@ -31,12 +35,18 @@ async def startup_event():
         except (ValueError, TypeError):
             interval = 10
     
-    print("Performing initial data analysis on startup...")
-    await run_analysis_task()
+    # Schedule the first run to happen 5 seconds after startup.
+    # This gives the server time to become healthy before heavy work begins.
+    run_time = datetime.datetime.now() + datetime.timedelta(seconds=5)
+    scheduler.add_job(run_analysis_task, 'date', run_date=run_time, id="initial_analysis_task")
+    print("Initial analysis task scheduled to run in 5 seconds.")
+
+    # Schedule the recurring job to run every N minutes
+    scheduler.add_job(run_analysis_task, 'interval', minutes=interval, id="recurring_analysis_task")
     
-    scheduler.add_job(run_analysis_task, 'interval', minutes=interval, id="analysis_task")
     scheduler.start()
-    print(f"Scheduler started. Analysis task will run every {interval} minutes.")
+    print(f"Scheduler started. Recurring analysis task will run every {interval} minutes.")
+
 
 @app.on_event("shutdown")
 def shutdown_event():
@@ -45,13 +55,11 @@ def shutdown_event():
 
 @app.get("/api/config")
 def get_config_from_db(session: Session = Depends(get_session)):
-    # ... (this endpoint remains the same)
     configs = session.exec(select(Config)).all()
     return {c.key: c.value for c in configs}
 
 @app.get("/api/results", response_model=List[AnalysisResult])
 def get_results_from_db(session: Session = Depends(get_session)):
-    # ... (this endpoint remains the same)
     statement = select(AnalysisResult).order_by(AnalysisResult.analysis_timestamp.desc()).limit(10)
     results = session.exec(statement).all()
     return results
@@ -116,7 +124,8 @@ async def handle_chat_with_db(chat_message: ChatMessage, session: Session = Depe
                 session.add(config_to_update)
                 config_changed = True
                 try:
-                    scheduler.reschedule_job("analysis_task", trigger='interval', minutes=interval_in_minutes)
+                    # Use modify_job to change the interval of the existing recurring task
+                    scheduler.modify_job("recurring_analysis_task", trigger='interval', minutes=interval_in_minutes)
                     replies.append(f"任务更新频率已调整为每 **{interval_in_minutes}** 分钟一次。")
                     print(f"Task rescheduled to run every {interval_in_minutes} minutes.")
                 except Exception as e:
@@ -132,4 +141,3 @@ async def handle_chat_with_db(chat_message: ChatMessage, session: Session = Depe
         response_text = "我收到了你的消息，但似乎没有需要我调整的配置。你可以尝试说：'追踪 java' 或 '每 15 分钟更新一次'。"
 
     return {"reply": response_text}
-
