@@ -7,13 +7,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlmodel import Session, select
 from typing import List, Optional
 import datetime
-import re # Import regular expressions
+import re
 from .database import create_db_and_tables, get_session, engine
 from .models import Config, AnalysisResult, ChatMessage
 from .scheduler import scheduler, run_analysis_task
 from . import services
 
-app = FastAPI(title="GitHub Trending AI Analyst Backend", version="3.0.0 (Hybrid Intent Parsing)")
+app = FastAPI(title="GitHub Trending AI Analyst Backend", version="3.1.0 (Final Deployment Fix)")
 
 origins = [ "http://localhost", "http://localhost:5173", "http://127.0.0.1:5173", "https://ai-trends-463709.web.app"]
 app.add_middleware( CORSMiddleware, allow_origins=origins, allow_credentials=True, allow_methods=["*"], allow_headers=["*"],)
@@ -26,7 +26,6 @@ async def startup_event():
         print("Database tables checked/created successfully.")
     except Exception as e:
         print(f"CRITICAL: Database initialization failed: {e}")
-        # In a real production app, you might want to exit or handle this more gracefully
         return
 
     with Session(engine) as session:
@@ -61,32 +60,24 @@ def get_results_from_db(session: Session = Depends(get_session)):
     return results
 
 def _parse_frequency_with_regex(message: str) -> Optional[int]:
-    """Extracts time interval in minutes from a message using Regex."""
-    # Pre-process for Chinese numbers and half
     processed_message = message.lower()
     replacements = { "一个半": "1.5", "半": "0.5", "一": "1", "二": "2", "两": "2", "三": "3", "四": "4", "五": "5", "六": "6", "七": "7", "八": "8", "九": "9", "十": "10", }
     for old, new in replacements.items():
         processed_message = processed_message.replace(old, new)
-
-    # Regex to find a number followed by 'hour' or '小时', or a number followed by 'minute'/'分钟' or just a number
     match_hour = re.search(r'(\d+(\.\d+)?)\s*(小时|hour)', processed_message)
     if match_hour:
         return int(float(match_hour.group(1)) * 60)
-
     match_minute = re.search(r'(\d+(\.\d+)?)\s*(分钟|minute)', processed_message)
     if match_minute:
         return int(float(match_minute.group(1)))
-        
     return None
 
 @app.post("/api/chat")
 async def handle_chat_with_db(chat_message: ChatMessage, session: Session = Depends(get_session)):
-    """Handles chat messages using a hybrid AI (for language) + Regex (for time) approach."""
     message = chat_message.message.lower()
     replies = []
     config_changed = False
     
-    # 1. Use AI to parse the language (its specialty)
     new_language = await services.parse_language_with_ai(message)
     if new_language:
         config_to_update = session.get(Config, "trending_language")
@@ -96,7 +87,6 @@ async def handle_chat_with_db(chat_message: ChatMessage, session: Session = Depe
             config_changed = True
             replies.append(f"追踪语言已更新为 **{new_language}**。")
 
-    # 2. Use Regex to parse the frequency (more reliable for structured data)
     interval_in_minutes = _parse_frequency_with_regex(message)
     if interval_in_minutes is not None:
         if interval_in_minutes < 1:
@@ -108,14 +98,14 @@ async def handle_chat_with_db(chat_message: ChatMessage, session: Session = Depe
                 session.add(config_to_update)
                 config_changed = True
                 try:
-                    scheduler.modify_job("recurring_analysis_task", trigger='interval', minutes=interval_in_minutes)
+                    # Using reschedule_job is more idiomatic for changing a trigger
+                    scheduler.reschedule_job("recurring_analysis_task", trigger='interval', minutes=interval_in_minutes)
                     replies.append(f"任务更新频率已调整为每 **{interval_in_minutes}** 分钟一次。")
                     print(f"Task rescheduled to run every {interval_in_minutes} minutes.")
                 except Exception as e:
                     replies.append("抱歉，调整任务频率时出错了。")
                     print(f"Error rescheduling job: {e}")
 
-    # 3. Finalize and respond
     if config_changed:
         session.commit()
     
