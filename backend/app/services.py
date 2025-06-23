@@ -3,10 +3,8 @@
 # New file for business logic (scraping, AI calls).
 # ===============================================================
 import httpx
-from bs4 import BeautifulSoup
 import json
 from typing import Optional
-from .models import AnalysisResult
 from .config import settings
 
 async def scrape_github_trending(language: str) -> list[dict]:
@@ -32,8 +30,8 @@ async def scrape_github_trending(language: str) -> list[dict]:
     print(f"Fetched {len(repos)} repositories for language: {language} from API.")
     return repos
 
-async def analyze_with_ai(content: str) -> Optional[dict]:
-    """Sends content to the Gemini 2.0 Flash model for analysis."""
+async def analyze_repo_with_ai(content: str) -> Optional[dict]:
+    """Sends content to the Gemini model for repository analysis."""
     api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={settings.ai_api_key}"
     prompt = f"Analyze the following repository information. Based on the text, return a JSON object with keys 'one_liner_summary', 'tech_stack', 'key_features', 'community_focus'. Respond with only the raw JSON object. Content: --- {content} ---"
     json_schema = { "type": "OBJECT", "properties": { "one_liner_summary": {"type": "STRING"}, "tech_stack": {"type": "ARRAY", "items": {"type": "STRING"}}, "key_features": {"type": "ARRAY", "items": {"type": "STRING"}}, "community_focus": {"type": "ARRAY", "items": {"type": "STRING"}} } }
@@ -47,15 +45,15 @@ async def analyze_with_ai(content: str) -> Optional[dict]:
             analysis_text = response_json['candidates'][0]['content']['parts'][0]['text']
             return json.loads(analysis_text)
         except Exception as e:
-            print(f"Error calling AI for analysis: {e}")
+            print(f"Error calling AI for repo analysis: {e}")
             return None
 
 async def parse_language_with_ai(user_message: str) -> Optional[str]:
     """Uses Gemini to parse ONLY the programming language from the user's message."""
     api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={settings.ai_api_key}"
     valid_languages = ['javascript', 'python', 'typescript', 'go', 'rust', 'java', 'c++']
-    prompt = f"""Analyze the user's request to find the programming language. The language MUST be one of these exact values: {valid_languages}. If no valid language is mentioned, return null for the language. User's request: "{user_message}". Return a single JSON object with only one key: "language"."""
-    json_schema = {"type": "OBJECT", "properties": {"language": {"type": "STRING", "enum": valid_languages, "description": "The programming language to track. Null if not present."}}}
+    prompt = f"""Analyze the user's request to find the programming language. The language MUST be one of these exact values: {valid_languages}. If no valid language is mentioned, return null. User's request: "{user_message}". Return a single JSON object with only one key: "language"."""
+    json_schema = {"type": "OBJECT", "properties": {"language": {"type": "STRING", "enum": valid_languages}}}
     headers = {"Content-Type": "application/json"}
     payload = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"responseMimeType": "application/json", "responseSchema": json_schema}}
     print(f"Sending to Gemini for LANGUAGE parsing: {user_message}")

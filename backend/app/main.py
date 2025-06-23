@@ -7,7 +7,6 @@ from fastapi import FastAPI, Depends, Header, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from sqlmodel import Session, select
 from typing import List, Optional
-import re
 from .database import create_db_and_tables, get_session
 from .models import Config, AnalysisResult, ChatMessage
 from . import services
@@ -20,10 +19,7 @@ app.add_middleware( CORSMiddleware, allow_origins=origins, allow_credentials=Tru
 
 @app.on_event("startup")
 def startup_event():
-    """
-    A lightweight startup event that only creates DB tables.
-    This is fast and reliable in a cloud environment.
-    """
+    """A lightweight startup event that only creates DB tables."""
     print("Application starting up...")
     create_db_and_tables()
     print("Application startup complete.")
@@ -42,12 +38,8 @@ def get_results_from_db(session: Session = Depends(get_session)):
 
 @app.post("/api/chat")
 async def handle_chat_with_db(chat_message: ChatMessage, session: Session = Depends(get_session)):
-    """
-    Handles chat messages to change the language. Frequency changes are now managed
-    by the cloud infrastructure (Cloud Scheduler).
-    """
+    """Handles chat messages to change the language."""
     message = chat_message.message.lower()
-    
     new_language = await services.parse_language_with_ai(message)
     if new_language:
         config_to_update = session.get(Config, "trending_language")
@@ -56,7 +48,6 @@ async def handle_chat_with_db(chat_message: ChatMessage, session: Session = Depe
             session.add(config_to_update)
             session.commit()
             return {"reply": f"好的，我已经将追踪语言更新为 **{new_language}**。"}
-
     return {"reply": "我收到了你的消息，但目前只支持通过聊天修改追踪语言。"}
     
 # --- Internal Task Endpoint ---
@@ -65,15 +56,9 @@ async def trigger_analysis_task(
     background_tasks: BackgroundTasks,
     x_cloud_scheduler: Optional[str] = Header(None)
 ):
-    """
-    An internal endpoint to trigger the analysis task, designed to be called by Cloud Scheduler.
-    It's protected by checking for a header that Cloud Scheduler automatically adds.
-    """
+    """An internal endpoint to trigger the analysis task, called by Cloud Scheduler."""
     if x_cloud_scheduler != "true":
          print("Warning: Task endpoint called without Cloud Scheduler header.")
-         # For higher security, you might want to uncomment the following line:
-         # raise HTTPException(status_code=403, detail="Not a valid Cloud Scheduler request.")
-
     print("Task endpoint triggered. Adding analysis task to background.")
     background_tasks.add_task(run_analysis_task)
     return {"status": "success", "message": "Analysis task started in the background."}
