@@ -1,26 +1,17 @@
 # ===============================================================
 # app/database.py
-# This file handles all database connection logic.
+# UPDATED: We no longer call create_db_and_tables here.
+# The database is now expected to exist.
 # ===============================================================
-from sqlmodel import create_engine, SQLModel, Session, select
-from .models import Config as DBConfig, AnalysisResult as DBAnalysisResult
+from sqlmodel import create_engine, Session
+import os
 
-# For cloud environments, write to the /tmp directory, which is writable.
-# The leading double slash is important for absolute paths in sqlite.
-DATABASE_URL = "sqlite:////tmp/database.db"
+# The database file will be copied into this location inside the container.
+# For local development, this path won't exist, which is fine.
+# In the cloud, it will be at the root of our application code.
+DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///database.db")
 
 engine = create_engine(DATABASE_URL, echo=False, connect_args={"check_same_thread": False})
-
-def create_db_and_tables():
-    SQLModel.metadata.create_all(engine)
-    with Session(engine) as session:
-        existing_config = session.get(DBConfig, "trending_language")
-        if not existing_config:
-            default_language = DBConfig(key="trending_language", value="python")
-            default_interval = DBConfig(key="schedule_interval_minutes", value="10")
-            session.add(default_language)
-            session.add(default_interval)
-            session.commit()
 
 def get_session():
     with Session(engine) as session:

@@ -1,8 +1,7 @@
 # ===============================================================
-# app/scheduler.py
-# This file defines the scheduled jobs.
+# app/tasks.py
+# NEW FILE: We are moving the task logic here to keep things clean.
 # ===============================================================
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlmodel import Session
 import datetime
 from .database import engine
@@ -10,17 +9,19 @@ from .models import Config, AnalysisResult
 from . import services
 
 async def run_analysis_task():
-    """The complete analysis pipeline, with improved error handling."""
+    """The complete analysis pipeline, now as a standalone callable task."""
     print("="*50)
-    print("RUNNING ANALYSIS TASK...")
+    print("BACKGROUND TASK TRIGGERED...")
     with Session(engine) as session:
         language_config = session.get(Config, "trending_language")
         language = language_config.value if language_config else "python"
     print(f"Current language from DB: {language}")
+    
     scraped_repos = await services.scrape_github_trending(language)
     if not scraped_repos:
         print("Scraping failed or returned no repos. Skipping analysis.")
         return
+        
     for repo_data in scraped_repos:
         print(f"Analyzing {repo_data['repo_name']} with Gemini...")
         ai_result = await services.analyze_with_ai(repo_data["readme_content"])
@@ -43,7 +44,6 @@ async def run_analysis_task():
                 print(f"CRITICAL: Failed to write analysis result to database for {repo_data['repo_name']}. Error: {e}")
         else:
             print(f"Failed to analyze: {repo_data['repo_name']}")
-    print("ANALYSIS TASK FINISHED.")
+    
+    print("BACKGROUND TASK FINISHED.")
     print("="*50)
-
-scheduler = AsyncIOScheduler()
