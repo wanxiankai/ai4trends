@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Bot, User, CornerDownLeft, Loader2, Github, Settings, Calendar, BarChart2, MessageCircle, X, Sun, Moon, Laptop, AlertTriangle } from 'lucide-react';
 
 // --- 常量定义 ---
-const API_BASE_URL = 'http://127.0.0.1:8000';
+const API_BASE_URL = 'https://ai-analyst-backend-210188681814.us-central1.run.app';
 
 // --- Theme Management ---
 type Theme = "light" | "dark" | "system";
