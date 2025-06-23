@@ -10,35 +10,40 @@ from .models import AnalysisResult
 from .config import settings # Import settings to get the API key
 
 async def scrape_github_trending(language: str) -> list[dict]:
-    # ... (this function remains the same)
-    url = f"https://github.com/trending/{language}?since=daily"
-    headers = {"User-Agent": "Mozilla/5.0"}
+    """
+    Fetches GitHub trending data from a stable, public API instead of scraping.
+    """
+    # This public API is more reliable than scraping the GitHub website directly.
+    api_url = f"https://gtrend.yapie.me/repositories?language={language}&since=daily"
+    headers = {"Accept": "application/json"}
+    
+    print(f"Fetching trending repos from API: {api_url}")
+    
     async with httpx.AsyncClient() as client:
         try:
-            response = await client.get(url, headers=headers, timeout=15)
+            response = await client.get(api_url, headers=headers, timeout=15)
             response.raise_for_status()
-        except httpx.RequestError as e:
-            print(f"Error scraping GitHub: {e}")
+            data = response.json()
+        except (httpx.RequestError, json.JSONDecodeError) as e:
+            print(f"Error fetching from GitHub Trending API: {e}")
             return []
 
-    soup = BeautifulSoup(response.text, "html.parser")
     repos = []
-    for article in soup.find_all("article", class_="Box-row")[:3]: # Analyze top 3
-        repo_name_tag = article.find("h2", class_="h3").find("a")
-        repo_name = repo_name_tag.get("href").strip("/")
-        repo_url = f"https://github.com{repo_name_tag.get('href')}"
-        description_tag = article.find("p", class_="col-9")
-        description = description_tag.text.strip() if description_tag else "No description provided."
+    # Take the top 3 repositories from the API response
+    for repo_info in data[:3]:
+        repo_name = f"{repo_info.get('author')}/{repo_info.get('name')}"
+        repo_url = repo_info.get('url', '#')
+        description = repo_info.get('description', 'No description provided.')
         
+        # We still create a combined content string for the AI to analyze
         readme_content = f"Repository: {repo_name}\nDescription: {description}"
         repos.append({"repo_name": repo_name, "repo_url": repo_url, "readme_content": readme_content})
     
-    print(f"Scraped {len(repos)} repositories for language: {language}")
+    print(f"Fetched {len(repos)} repositories for language: {language} from API.")
     return repos
 
 async def analyze_with_ai(content: str) -> Optional[dict]:
     """Sends content to the Gemini 2.0 Flash model for analysis."""
-    # ... (this function remains the same)
     api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={settings.ai_api_key}"
     prompt = f"""
     You are a professional software engineer and tech analyst. Analyze the following repository information.
@@ -61,55 +66,21 @@ async def analyze_with_ai(content: str) -> Optional[dict]:
             return None
 
 async def parse_intent_with_ai(user_message: str) -> Optional[dict]:
-    """Uses Gemini to parse the user's message into structured intent data.
-    This version asks the AI to extract raw values, not to perform calculations.
-    """
+    """Uses Gemini to parse the user's message into structured intent data."""
     api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={settings.ai_api_key}"
     
     valid_languages = ['javascript', 'python', 'typescript', 'go', 'rust', 'java', 'c++']
-
-    # UPDATED PROMPT: More explicit instructions for the AI
     prompt = f"""
     Analyze the user's request to find the programming language and update frequency.
-    Your task is to extract entities and return a JSON object.
-
-    1.  **language**: Identify the programming language. It MUST be one of these exact values: {valid_languages}. If no valid language is mentioned, return null for this field.
-    2.  **time_value**: Extract only the numerical value of the time (e.g., for "1.5 hours" extract 1.5, for "10 minutes" extract 10). If no time is mentioned, return null.
-    3.  **time_unit**: If you extract a 'time_value', you MUST identify its unit. The unit must be either "minutes" or "hours". If no unit is explicitly mentioned with a number, infer it (e.g., 'every 30' likely means 30 minutes).
-
+    1.  **language**: Identify the programming language. It MUST be one of these exact values: {valid_languages}. If no valid language is mentioned, return null.
+    2.  **time_value**: Extract only the numerical value of the time (e.g., for "1.5 hours" extract 1.5, for "10 minutes" extract 10). If not found, return null.
+    3.  **time_unit**: If you extract a 'time_value', you MUST identify its unit. The unit must be either "minutes" or "hours".
     User's request: "{user_message}"
-
     Return a single JSON object with the keys "language", "time_value", and "time_unit".
     """
-
-    json_schema = {
-        "type": "OBJECT",
-        "properties": {
-            "language": {
-                "type": "STRING",
-                "enum": valid_languages,
-                "description": "The programming language to track. Null if not present."
-            },
-            "time_value": {
-                "type": "NUMBER",
-                "description": "The numeric value for the time interval. Null if not present."
-            },
-            "time_unit": {
-                "type": "STRING",
-                "enum": ["minutes", "hours"],
-                "description": "The unit of time for the interval."
-            }
-        },
-    }
-    
+    json_schema = { "type": "OBJECT", "properties": { "language": { "type": "STRING", "enum": valid_languages }, "time_value": { "type": "NUMBER" }, "time_unit": { "type": "STRING", "enum": ["minutes", "hours"] } } }
     headers = {"Content-Type": "application/json"}
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {
-            "responseMimeType": "application/json",
-            "responseSchema": json_schema
-        }
-    }
+    payload = { "contents": [{"parts": [{"text": prompt}]}], "generationConfig": { "responseMimeType": "application/json", "responseSchema": json_schema } }
 
     print(f"Sending to Gemini for intent parsing: {user_message}")
     async with httpx.AsyncClient() as client:
@@ -126,4 +97,3 @@ async def parse_intent_with_ai(user_message: str) -> Optional[dict]:
             if 'response' in locals():
                 print(f"API Response Body: {response.text}")
             return None
-
