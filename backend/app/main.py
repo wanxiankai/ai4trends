@@ -6,27 +6,28 @@ from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from sqlmodel import Session, select
 from typing import List, Optional
-import datetime # Import datetime for scheduling
-
+import datetime
+import re # Import regular expressions
 from .database import create_db_and_tables, get_session, engine
 from .models import Config, AnalysisResult, ChatMessage
 from .scheduler import scheduler, run_analysis_task
-from . import services # Import the services module
+from . import services
 
-app = FastAPI(title="GitHub Trending AI Analyst Backend", version="2.4.0 (Robust Startup)")
+app = FastAPI(title="GitHub Trending AI Analyst Backend", version="3.0.0 (Hybrid Intent Parsing)")
 
 origins = [ "http://localhost", "http://localhost:5173", "http://127.0.0.1:5173", "https://ai-trends-463709.web.app"]
 app.add_middleware( CORSMiddleware, allow_origins=origins, allow_credentials=True, allow_methods=["*"], allow_headers=["*"],)
 
-
 @app.on_event("startup")
 async def startup_event():
-    """
-    On startup, create DB, and schedule tasks to run in the background.
-    This allows the web server to start quickly without being blocked.
-    """
     print("Application starting up...")
-    create_db_and_tables()
+    try:
+        create_db_and_tables()
+        print("Database tables checked/created successfully.")
+    except Exception as e:
+        print(f"CRITICAL: Database initialization failed: {e}")
+        # In a real production app, you might want to exit or handle this more gracefully
+        return
 
     with Session(engine) as session:
         interval_config = session.get(Config, "schedule_interval_minutes")
@@ -35,18 +36,13 @@ async def startup_event():
         except (ValueError, TypeError):
             interval = 10
     
-    # Schedule the first run to happen 5 seconds after startup.
-    # This gives the server time to become healthy before heavy work begins.
     run_time = datetime.datetime.now() + datetime.timedelta(seconds=5)
     scheduler.add_job(run_analysis_task, 'date', run_date=run_time, id="initial_analysis_task")
     print("Initial analysis task scheduled to run in 5 seconds.")
 
-    # Schedule the recurring job to run every N minutes
     scheduler.add_job(run_analysis_task, 'interval', minutes=interval, id="recurring_analysis_task")
-    
     scheduler.start()
     print(f"Scheduler started. Recurring analysis task will run every {interval} minutes.")
-
 
 @app.on_event("shutdown")
 def shutdown_event():
@@ -64,31 +60,34 @@ def get_results_from_db(session: Session = Depends(get_session)):
     results = session.exec(statement).all()
     return results
 
-def preprocess_message_for_ai(message: str) -> str:
-    """Replaces Chinese number words and units with Arabic numerals for better AI parsing."""
+def _parse_frequency_with_regex(message: str) -> Optional[int]:
+    """Extracts time interval in minutes from a message using Regex."""
+    # Pre-process for Chinese numbers and half
+    processed_message = message.lower()
     replacements = { "一个半": "1.5", "半": "0.5", "一": "1", "二": "2", "两": "2", "三": "3", "四": "4", "五": "5", "六": "6", "七": "7", "八": "8", "九": "9", "十": "10", }
     for old, new in replacements.items():
-        message = message.replace(old, new)
-    return message
+        processed_message = processed_message.replace(old, new)
+
+    # Regex to find a number followed by 'hour' or '小时', or a number followed by 'minute'/'分钟' or just a number
+    match_hour = re.search(r'(\d+(\.\d+)?)\s*(小时|hour)', processed_message)
+    if match_hour:
+        return int(float(match_hour.group(1)) * 60)
+
+    match_minute = re.search(r'(\d+(\.\d+)?)\s*(分钟|minute)', processed_message)
+    if match_minute:
+        return int(float(match_minute.group(1)))
+        
+    return None
 
 @app.post("/api/chat")
 async def handle_chat_with_db(chat_message: ChatMessage, session: Session = Depends(get_session)):
-    """
-    Handles chat messages by pre-processing, parsing with AI, then executing.
-    """
-    original_message = chat_message.message.lower()
-    processed_message = preprocess_message_for_ai(original_message)
-    print(f"Original message: '{original_message}' -> Processed message: '{processed_message}'")
-
-    intent_data = await services.parse_intent_with_ai(processed_message)
-
-    if not intent_data:
-        return {"reply": "抱歉，我在理解你的请求时遇到了一个问题，请稍后再试。"}
-
+    """Handles chat messages using a hybrid AI (for language) + Regex (for time) approach."""
+    message = chat_message.message.lower()
     replies = []
     config_changed = False
     
-    new_language = intent_data.get("language")
+    # 1. Use AI to parse the language (its specialty)
+    new_language = await services.parse_language_with_ai(message)
     if new_language:
         config_to_update = session.get(Config, "trending_language")
         if config_to_update and config_to_update.value != new_language:
@@ -97,24 +96,9 @@ async def handle_chat_with_db(chat_message: ChatMessage, session: Session = Depe
             config_changed = True
             replies.append(f"追踪语言已更新为 **{new_language}**。")
 
-    time_value = intent_data.get("time_value")
-    time_unit = intent_data.get("time_unit")
-    
-    # Fallback logic: If AI missed the unit, check the original message
-    if time_value is not None and time_unit is None:
-        if "小时" in original_message or "hour" in original_message:
-            time_unit = "hours"
-            print("Fallback applied: Detected 'hours' unit from original message.")
-    
-    if time_value is not None:
-        interval_in_minutes = 0
-        unit_to_check = time_unit or "minutes" # Default to minutes if still no unit
-        
-        if unit_to_check == "hours":
-            interval_in_minutes = int(float(time_value) * 60)
-        else:
-            interval_in_minutes = int(float(time_value))
-
+    # 2. Use Regex to parse the frequency (more reliable for structured data)
+    interval_in_minutes = _parse_frequency_with_regex(message)
+    if interval_in_minutes is not None:
         if interval_in_minutes < 1:
             replies.append("更新频率太快了！请设置一个不小于1分钟的间隔。")
         else:
@@ -124,7 +108,6 @@ async def handle_chat_with_db(chat_message: ChatMessage, session: Session = Depe
                 session.add(config_to_update)
                 config_changed = True
                 try:
-                    # Use modify_job to change the interval of the existing recurring task
                     scheduler.modify_job("recurring_analysis_task", trigger='interval', minutes=interval_in_minutes)
                     replies.append(f"任务更新频率已调整为每 **{interval_in_minutes}** 分钟一次。")
                     print(f"Task rescheduled to run every {interval_in_minutes} minutes.")
@@ -132,6 +115,7 @@ async def handle_chat_with_db(chat_message: ChatMessage, session: Session = Depe
                     replies.append("抱歉，调整任务频率时出错了。")
                     print(f"Error rescheduling job: {e}")
 
+    # 3. Finalize and respond
     if config_changed:
         session.commit()
     
