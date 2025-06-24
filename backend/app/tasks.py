@@ -4,17 +4,22 @@
 # ===============================================================
 from sqlmodel import Session
 import datetime
-from .database import engine
+from .database import engine # Removed create_db_and_tables import
 from .models import Config, AnalysisResult
 from . import services
 
 async def run_analysis_task():
-    """The complete analysis pipeline, now using the official GitHub API."""
+    """
+    The complete analysis pipeline, as a standalone callable task.
+    It now assumes the database and tables already exist.
+    """
     print("="*50)
     print("BACKGROUND TASK TRIGGERED...")
+    
     with Session(engine) as session:
         language_config = session.get(Config, "trending_language")
         language = language_config.value if language_config else "python"
+    
     print(f"Current language from DB: {language}")
     
     scraped_repos = await services.get_trending_repos_from_github_api(language)
