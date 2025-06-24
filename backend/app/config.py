@@ -6,6 +6,7 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     ai_api_key: str = "default_key"
+    github_token: str = "default_token" # New setting for GitHub API
 
     class Config:
         env_file = ".env"

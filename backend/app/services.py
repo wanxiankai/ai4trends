@@ -7,31 +7,42 @@ import json
 from typing import Optional
 from .config import settings
 
-async def scrape_github_trending(language: str) -> list[dict]:
-    """Fetches GitHub trending data from a stable, public API."""
-    api_url = f"https://gtrend.yapie.me/repositories?language={language}&since=daily"
-    headers = {"Accept": "application/json"}
-    print(f"Fetching trending repos from API: {api_url}")
+async def get_trending_repos_from_github_api(language: str) -> list[dict]:
+    """Fetches trending repositories using the official GitHub Search API."""
+    api_url = f"https://api.github.com/search/repositories?q=language:{language}+stars:>100&sort=stars&order=desc"
+    headers = {
+        "Accept": "application/vnd.github.v3+json",
+        "Authorization": f"Bearer {settings.github_token}"
+    }
+    print(f"Fetching trending repos from official GitHub API: {api_url}")
+    
     async with httpx.AsyncClient() as client:
         try:
-            response = await client.get(api_url, headers=headers, timeout=15)
+            response = await client.get(api_url, headers=headers, timeout=20)
             response.raise_for_status()
             data = response.json()
-        except (httpx.RequestError, json.JSONDecodeError) as e:
-            print(f"Error fetching from GitHub Trending API: {e}")
+            items = data.get("items", [])
+        except (httpx.RequestError, json.JSONDecodeError, KeyError) as e:
+            print(f"Error fetching from GitHub API: {e}")
             return []
+
     repos = []
-    for repo_info in data[:3]:
-        repo_name = f"{repo_info.get('author')}/{repo_info.get('name')}"
-        repo_url = repo_info.get('url', '#')
+    for repo_info in items[:3]: # Take top 3
+        repo_name = repo_info.get('full_name')
+        repo_url = repo_info.get('html_url', '#')
         description = repo_info.get('description', 'No description provided.')
+        
+        if not repo_name:
+            continue
+
         readme_content = f"Repository: {repo_name}\nDescription: {description}"
         repos.append({"repo_name": repo_name, "repo_url": repo_url, "readme_content": readme_content})
-    print(f"Fetched {len(repos)} repositories for language: {language} from API.")
+    
+    print(f"Fetched {len(repos)} repositories for language: {language} from GitHub API.")
     return repos
 
 async def analyze_repo_with_ai(content: str) -> Optional[dict]:
-    """Sends content to the Gemini model for repository analysis."""
+    # ... (this function remains the same)
     api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={settings.ai_api_key}"
     prompt = f"Analyze the following repository information. Based on the text, return a JSON object with keys 'one_liner_summary', 'tech_stack', 'key_features', 'community_focus'. Respond with only the raw JSON object. Content: --- {content} ---"
     json_schema = { "type": "OBJECT", "properties": { "one_liner_summary": {"type": "STRING"}, "tech_stack": {"type": "ARRAY", "items": {"type": "STRING"}}, "key_features": {"type": "ARRAY", "items": {"type": "STRING"}}, "community_focus": {"type": "ARRAY", "items": {"type": "STRING"}} } }
@@ -49,7 +60,7 @@ async def analyze_repo_with_ai(content: str) -> Optional[dict]:
             return None
 
 async def parse_language_with_ai(user_message: str) -> Optional[str]:
-    """Uses Gemini to parse ONLY the programming language from the user's message."""
+    # ... (this function remains the same)
     api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={settings.ai_api_key}"
     valid_languages = ['javascript', 'python', 'typescript', 'go', 'rust', 'java', 'c++']
     prompt = f"""Analyze the user's request to find the programming language. The language MUST be one of these exact values: {valid_languages}. If no valid language is mentioned, return null. User's request: "{user_message}". Return a single JSON object with only one key: "language"."""
