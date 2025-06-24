@@ -317,6 +317,8 @@ const App: React.FC = () => {
         if (isNaN(intervalMinutes) || intervalMinutes < 1) return;
 
         const lastUpdateDate = parseUTCDate(results[0].analysis_timestamp);
+        if(!lastUpdateDate) return;
+
         const nextUpdateDate = new Date(lastUpdateDate.getTime() + intervalMinutes * 60 * 1000);
         
         let timeUntilNextUpdate = nextUpdateDate.getTime() - Date.now();
@@ -380,18 +382,33 @@ const App: React.FC = () => {
   };
 
   // NEW: Robustly parse date strings as UTC
-  const parseUTCDate = (dateString: string): Date => {
-    // Backend may return a string like "2023-10-27 08:30:00.123456"
-    // To treat it as UTC, we need to format it as ISO 8601, like "2023-10-27T08:30:00.123Z"
-    if (dateString.includes(' ') && !dateString.endsWith('Z')) {
+  const parseUTCDate = (dateString: string | undefined): Date | null => {
+    if (!dateString) return null;
+
+    // Best case: ISO 8601 format like "2023-10-27T08:30:00.123Z"
+    if (dateString.includes('T') && dateString.endsWith('Z')) {
+        return new Date(dateString);
+    }
+    
+    // Handle Python's default format "YYYY-MM-DD HH:MM:SS.ffffff"
+    // By replacing the space with 'T' and adding 'Z', we tell the constructor it's UTC.
+    if (dateString.includes(' ')) {
         return new Date(dateString.replace(' ', 'T') + 'Z');
     }
-    return new Date(dateString);
+
+    // Fallback for other potential formats, though less reliable
+    try {
+        const d = new Date(dateString);
+        if(isNaN(d.getTime())) return null;
+        return d;
+    } catch(e) {
+        return null;
+    }
   }
 
   const getTimeAgo = (date: string): string => {
-    const timestamp = parseUTCDate(date).getTime();
-    if (isNaN(timestamp)) return '未知时间';
+    const timestamp = parseUTCDate(date)?.getTime();
+    if (timestamp === undefined || isNaN(timestamp)) return '未知时间';
     
     const seconds = Math.floor((Date.now() - timestamp) / 1000);
     if (seconds < 5) return '刚刚';
@@ -415,6 +432,8 @@ const App: React.FC = () => {
       }
       
       const lastUpdate = parseUTCDate(results[0].analysis_timestamp);
+      if(!lastUpdate) return 'N/A';
+
       lastUpdate.setMinutes(lastUpdate.getMinutes() + intervalMinutes);
       return lastUpdate.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit'});
   }
