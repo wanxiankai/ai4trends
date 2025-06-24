@@ -1,5 +1,16 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Bot, User, CornerDownLeft, Loader2, Github, Settings, Calendar, BarChart2, MessageCircle, X, Sun, Moon, Laptop, AlertTriangle } from 'lucide-react';
+import dayjs from 'dayjs';
+import utc from 'dayjs/plugin/utc';
+import timezone from 'dayjs/plugin/timezone';
+import relativeTime from 'dayjs/plugin/relativeTime';
+import 'dayjs/locale/zh-cn';
+
+// Configure dayjs plugins
+dayjs.extend(utc);
+dayjs.extend(timezone);
+dayjs.extend(relativeTime);
+dayjs.locale('zh-cn');
 
 // --- 常量定义 ---
 // 请确保这里的 URL 是你部署成功的后端服务的公开地址
@@ -58,8 +69,54 @@ interface Message {
   text: string;
 }
 
-// --- Helper Components ---
-// (StatusIndicator, ProjectCard, ChatModal, ThemeToggle components remain the same, so they are omitted for brevity)
+// --- Helper Functions ---
+// Parse UTC date string and convert to local timezone
+const parseUTCDate = (dateString: string | undefined): dayjs.Dayjs | null => {
+  if (!dateString) return null;
+
+  try {
+    // Handle Python's default format "YYYY-MM-DDTHH:MM:SS.ffffff" (without Z)
+    // Treat it as UTC and convert to local timezone
+    if (dateString.includes('T') && !dateString.endsWith('Z')) {
+      return dayjs.utc(dateString).local();
+    }
+    
+    // Handle ISO 8601 format with Z
+    if (dateString.includes('T') && dateString.endsWith('Z')) {
+      return dayjs.utc(dateString).local();
+    }
+    
+    // Handle Python's space format "YYYY-MM-DD HH:MM:SS.ffffff"
+    if (dateString.includes(' ')) {
+      return dayjs.utc(dateString.replace(' ', 'T')).local();
+    }
+
+    // Fallback
+    return dayjs.utc(dateString).local();
+  } catch {
+    return null;
+  }
+}
+
+// Format UTC date to local timezone string with timezone info
+const formatLocalDateTime = (dateString: string): string => {
+  const localDate = parseUTCDate(dateString);
+  if (!localDate) return '未知时间';
+  
+  // Get timezone abbreviation
+  const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const shortTimezone = timezone.split('/').pop() || timezone;
+  
+  return localDate.format('YYYY/MM/DD HH:mm:ss') + ` (${shortTimezone})`;
+}
+
+// Get relative time (e.g., "2 hours ago")
+const getTimeAgo = (dateString: string): string => {
+  const localDate = parseUTCDate(dateString);
+  if (!localDate) return '未知时间';
+  
+  return localDate.fromNow();
+}
 
 interface StatusIndicatorProps {
   lastUpdated: string;
@@ -121,7 +178,7 @@ const ProjectCard: React.FC<ProjectCardProps> = ({ project }) => (
                 </div>
             </div>
         </div>
-        <p className="text-xs text-slate-400 dark:text-gray-500 pt-4 mt-4 border-t border-slate-200 dark:border-gray-700/50">分析于: {new Date(project.analysis_timestamp).toLocaleString('zh-CN')}</p>
+        <p className="text-xs text-slate-400 dark:text-gray-500 pt-4 mt-4 border-t border-slate-200 dark:border-gray-700/50">分析于: {formatLocalDateTime(project.analysis_timestamp)}</p>
     </div>
 );
 
@@ -288,8 +345,8 @@ const App: React.FC = () => {
         setConfig(configData);
         setResults(resultsData);
         setError(null);
-      } catch (err: any) {
-        setError(err.message || '获取数据失败，请稍后重试。');
+      } catch (err: unknown) {
+        setError((err as Error).message || '获取数据失败，请稍后重试。');
       } finally {
         if (isInitialLoad) {
             setIsLoading(false);
@@ -319,9 +376,9 @@ const App: React.FC = () => {
         const lastUpdateDate = parseUTCDate(results[0].analysis_timestamp);
         if(!lastUpdateDate) return;
 
-        const nextUpdateDate = new Date(lastUpdateDate.getTime() + intervalMinutes * 60 * 1000);
+        const nextUpdateDate = lastUpdateDate.add(intervalMinutes, 'minute');
         
-        let timeUntilNextUpdate = nextUpdateDate.getTime() - Date.now();
+        let timeUntilNextUpdate = nextUpdateDate.valueOf() - Date.now();
         
         // If the next update time has passed, poll every 30 seconds for new data
         if (timeUntilNextUpdate < 0) {
@@ -373,53 +430,16 @@ const App: React.FC = () => {
 
         setMessages(prev => [...prev, botMessage]);
 
-    } catch (chatError: any) {
-        const errorMessage: Message = { id: Date.now() + 1, sender: 'bot', text: `出错了: ${chatError.message}` };
+    } catch (chatError: unknown) {
+        const errorMessage: Message = { id: Date.now() + 1, sender: 'bot', text: `出错了: ${(chatError as Error).message}` };
         setMessages(prev => [...prev, errorMessage]);
     } finally {
         setIsTyping(false);
     }
   };
 
-  // NEW: Robustly parse date strings as UTC
-  const parseUTCDate = (dateString: string | undefined): Date | null => {
-    if (!dateString) return null;
 
-    // Best case: ISO 8601 format like "2023-10-27T08:30:00.123Z"
-    if (dateString.includes('T') && dateString.endsWith('Z')) {
-        return new Date(dateString);
-    }
-    
-    // Handle Python's default format "YYYY-MM-DD HH:MM:SS.ffffff"
-    // By replacing the space with 'T' and adding 'Z', we tell the constructor it's UTC.
-    if (dateString.includes(' ')) {
-        return new Date(dateString.replace(' ', 'T') + 'Z');
-    }
 
-    // Fallback for other potential formats, though less reliable
-    try {
-        const d = new Date(dateString);
-        if(isNaN(d.getTime())) return null;
-        return d;
-    } catch(e) {
-        return null;
-    }
-  }
-
-  const getTimeAgo = (date: string): string => {
-    const timestamp = parseUTCDate(date)?.getTime();
-    if (timestamp === undefined || isNaN(timestamp)) return '未知时间';
-    
-    const seconds = Math.floor((Date.now() - timestamp) / 1000);
-    if (seconds < 5) return '刚刚';
-    if (seconds < 60) return `${seconds} 秒前`;
-    const minutes = Math.floor(seconds / 60);
-    if (minutes < 60) return `${minutes} 分钟前`;
-    const hours = Math.floor(minutes / 60);
-    if (hours < 24) return `${hours} 小时前`;
-    const days = Math.floor(hours / 24);
-    return `${days} 天前`;
-  }
 
   const getNextUpdateTime = (): string => {
       if (!results || results.length === 0 || !config || !config.schedule_interval_minutes) {
@@ -434,8 +454,13 @@ const App: React.FC = () => {
       const lastUpdate = parseUTCDate(results[0].analysis_timestamp);
       if(!lastUpdate) return 'N/A';
 
-      lastUpdate.setMinutes(lastUpdate.getMinutes() + intervalMinutes);
-      return lastUpdate.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit'});
+      const nextUpdate = lastUpdate.add(intervalMinutes, 'minute');
+      
+      // Get timezone abbreviation
+      const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      const shortTimezone = timezone.split('/').pop() || timezone;
+      
+      return nextUpdate.format('HH:mm') + ` (${shortTimezone})`;
   }
   
   const formatInterval = (minutesStr: string | undefined): string => {
