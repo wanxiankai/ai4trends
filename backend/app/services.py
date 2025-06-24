@@ -9,7 +9,16 @@ from .config import settings
 
 async def get_trending_repos_from_github_api(language: str) -> list[dict]:
     """Fetches trending repositories using the official GitHub Search API."""
-    api_url = f"https://api.github.com/search/repositories?q=language:{language}+stars:>100&sort=stars&order=desc"
+    
+    # Build the query. If language is 'all', we don't include the language filter.
+    base_query = "stars:>100"
+    if language and language.lower() != 'all':
+        query = f"language:{language}+{base_query}"
+    else:
+        query = base_query
+        
+    api_url = f"https://api.github.com/search/repositories?q={query}&sort=stars&order=desc"
+    
     headers = {
         "Accept": "application/vnd.github.v3+json",
         "Authorization": f"Bearer {settings.github_token}"
@@ -19,12 +28,19 @@ async def get_trending_repos_from_github_api(language: str) -> list[dict]:
     async with httpx.AsyncClient() as client:
         try:
             response = await client.get(api_url, headers=headers, timeout=20)
+            print(f"GitHub API response status: {response.status_code}")
             response.raise_for_status()
             data = response.json()
             items = data.get("items", [])
         except (httpx.RequestError, json.JSONDecodeError, KeyError) as e:
             print(f"Error fetching from GitHub API: {e}")
+            if 'response' in locals() and hasattr(response, 'text'):
+                print(f"GitHub API Raw Response Body: {response.text}")
             return []
+
+    if not items:
+        print("GitHub API returned 0 items. The response might be valid but empty.")
+        print(f"Full response from GitHub API: {data}")
 
     repos = []
     for repo_info in items[:3]: # Take top 3
@@ -38,7 +54,7 @@ async def get_trending_repos_from_github_api(language: str) -> list[dict]:
         readme_content = f"Repository: {repo_name}\nDescription: {description}"
         repos.append({"repo_name": repo_name, "repo_url": repo_url, "readme_content": readme_content})
     
-    print(f"Fetched {len(repos)} repositories for language: {language} from GitHub API.")
+    print(f"Successfully parsed {len(repos)} repositories from GitHub API.")
     return repos
 
 async def analyze_repo_with_ai(content: str) -> Optional[dict]:
@@ -62,8 +78,8 @@ async def analyze_repo_with_ai(content: str) -> Optional[dict]:
 async def parse_language_with_ai(user_message: str) -> Optional[str]:
     # ... (this function remains the same)
     api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={settings.ai_api_key}"
-    valid_languages = ['javascript', 'python', 'typescript', 'go', 'rust', 'java', 'c++']
-    prompt = f"""Analyze the user's request to find the programming language. The language MUST be one of these exact values: {valid_languages}. If no valid language is mentioned, return null. User's request: "{user_message}". Return a single JSON object with only one key: "language"."""
+    valid_languages = ['all', 'javascript', 'python', 'typescript', 'go', 'rust', 'java', 'c++']
+    prompt = f"""Analyze the user's request to find the programming language. The language MUST be one of these exact values: {valid_languages}. If the user mentions "all" or "any" language, use "all". If no valid language is mentioned, return null. User's request: "{user_message}". Return a single JSON object with only one key: "language"."""
     json_schema = {"type": "OBJECT", "properties": {"language": {"type": "STRING", "enum": valid_languages}}}
     headers = {"Content-Type": "application/json"}
     payload = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"responseMimeType": "application/json", "responseSchema": json_schema}}
