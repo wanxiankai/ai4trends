@@ -1,7 +1,8 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Bot, User, CornerDownLeft, Loader2, Github, Settings, Calendar, BarChart2, MessageCircle, X, Sun, Moon, Laptop, AlertTriangle } from 'lucide-react';
 
 // --- 常量定义 ---
+// 请确保这里的 URL 是你部署成功的后端服务的公开地址
 const API_BASE_URL = 'https://ai-analyst-backend-210188681814.us-central1.run.app';
 
 // --- Theme Management ---
@@ -46,7 +47,6 @@ interface AnalysisResult {
   community_focus: string[];
 }
 
-// UPDATED: Changed to schedule_interval_minutes and type is string
 interface AppConfig {
   trending_language: string;
   schedule_interval_minutes: string; 
@@ -121,7 +121,7 @@ const ProjectCard: React.FC<ProjectCardProps> = ({ project }) => (
                 </div>
             </div>
         </div>
-        <p className="text-xs text-slate-400 dark:text-gray-500 pt-4 mt-4 border-t border-slate-200 dark:border-gray-700/50">分析于: {new Date(project.analysis_timestamp).toLocaleString()}</p>
+        <p className="text-xs text-slate-400 dark:text-gray-500 pt-4 mt-4 border-t border-slate-200 dark:border-gray-700/50">分析于: {new Date(project.analysis_timestamp).toLocaleString('zh-CN')}</p>
     </div>
 );
 
@@ -263,10 +263,15 @@ const App: React.FC = () => {
   
   const [isTyping, setIsTyping] = useState<boolean>(false);
   const [isChatOpen, setIsChatOpen] = useState<boolean>(false);
+  
+  const refreshTimerId = useRef<NodeJS.Timeout | null>(null);
 
-  useEffect(() => {
-    const fetchData = async () => {
-      // ... (fetchData logic remains the same)
+  // Use useCallback with an empty dependency array to create a stable fetchData function
+  const fetchData = useCallback(async (isInitialLoad = false) => {
+      if (isInitialLoad) {
+          setIsLoading(true);
+      }
+      console.log("Fetching data...");
       try {
         const [configRes, resultsRes] = await Promise.all([
           fetch(`${API_BASE_URL}/api/config`),
@@ -277,26 +282,66 @@ const App: React.FC = () => {
         }
         const configData = await configRes.json();
         const resultsData = await resultsRes.json();
+        
+        console.log("Data fetched successfully:", { configData, resultsData });
+
         setConfig(configData);
         setResults(resultsData);
         setError(null);
       } catch (err: any) {
         setError(err.message || '获取数据失败，请稍后重试。');
       } finally {
-        setIsLoading(false);
+        if (isInitialLoad) {
+            setIsLoading(false);
+        }
       }
-    };
-
-    fetchData();
+    }, []); // Empty array means this function is created once and never changes.
+  
+  useEffect(() => {
+    fetchData(true); // Initial data load
 
     setMessages([
       { id: 1, sender: 'bot', text: '你好！我是你的 GitHub 热点分析助手。' },
       { id: 2, sender: 'bot', text: '你可以跟我聊天来调整任务设置。' }
     ]);
-  }, []);
+  }, [fetchData]); // Dependency on stable fetchData function, so this runs only once.
   
+  // This effect handles the automatic refresh timer
+  useEffect(() => {
+    if (refreshTimerId.current) {
+        clearTimeout(refreshTimerId.current);
+    }
+
+    if (results.length > 0 && config) {
+        const intervalMinutes = parseInt(config.schedule_interval_minutes, 10);
+        if (isNaN(intervalMinutes) || intervalMinutes < 1) return;
+
+        const lastUpdateDate = parseUTCDate(results[0].analysis_timestamp);
+        const nextUpdateDate = new Date(lastUpdateDate.getTime() + intervalMinutes * 60 * 1000);
+        
+        let timeUntilNextUpdate = nextUpdateDate.getTime() - Date.now();
+        
+        // If the next update time has passed, poll every 30 seconds for new data
+        if (timeUntilNextUpdate < 0) {
+            console.log("Next update time has passed. Scheduling a check in 30 seconds.");
+            timeUntilNextUpdate = 30000;
+        }
+
+        console.log(`Scheduling next data refresh in ${Math.round(timeUntilNextUpdate / 1000)} seconds.`);
+        
+        refreshTimerId.current = setTimeout(() => {
+            fetchData();
+        }, timeUntilNextUpdate);
+    }
+    
+    return () => {
+        if (refreshTimerId.current) {
+            clearTimeout(refreshTimerId.current);
+        }
+    };
+  }, [results, config, fetchData]);
+
   const handleSendMessage = async (e: React.FormEvent<HTMLFormElement>) => {
-    // ... (handleSendMessage logic remains the same)
     e.preventDefault();
     if (!input.trim() || isTyping) return;
 
@@ -320,9 +365,9 @@ const App: React.FC = () => {
         const data = await response.json();
         const botMessage: Message = { id: Date.now() + 1, sender: 'bot', text: data.reply };
         
-        const configRes = await fetch(`${API_BASE_URL}/api/config`);
-        const configData = await configRes.json();
-        setConfig(configData);
+        // After a successful config change, fetch data immediately to reflect changes
+        // and restart the refresh timer with the new configuration.
+        await fetchData();
 
         setMessages(prev => [...prev, botMessage]);
 
@@ -334,19 +379,31 @@ const App: React.FC = () => {
     }
   };
 
-  const getTimeAgo = (date: string): string => {
-    // ... (function content unchanged)
-    const seconds = Math.floor((new Date().getTime() - new Date(date).getTime()) / 1000);
-    if (seconds < 60) return `${Math.floor(seconds)} 秒前`;
-    const minutes = seconds / 60;
-    if (minutes < 60) return `${Math.floor(minutes)} 分钟前`;
-    const hours = minutes / 60;
-    if (hours < 24) return `${Math.floor(hours)} 小时前`;
-    const days = hours / 24;
-    return `${Math.floor(days)} 天前`;
+  // NEW: Robustly parse date strings as UTC
+  const parseUTCDate = (dateString: string): Date => {
+    // Backend may return a string like "2023-10-27 08:30:00.123456"
+    // To treat it as UTC, we need to format it as ISO 8601, like "2023-10-27T08:30:00.123Z"
+    if (dateString.includes(' ') && !dateString.endsWith('Z')) {
+        return new Date(dateString.replace(' ', 'T') + 'Z');
+    }
+    return new Date(dateString);
   }
 
-  // UPDATED: Now uses minutes for calculation and is more robust
+  const getTimeAgo = (date: string): string => {
+    const timestamp = parseUTCDate(date).getTime();
+    if (isNaN(timestamp)) return '未知时间';
+    
+    const seconds = Math.floor((Date.now() - timestamp) / 1000);
+    if (seconds < 5) return '刚刚';
+    if (seconds < 60) return `${seconds} 秒前`;
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return `${minutes} 分钟前`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return `${hours} 小时前`;
+    const days = Math.floor(hours / 24);
+    return `${days} 天前`;
+  }
+
   const getNextUpdateTime = (): string => {
       if (!results || results.length === 0 || !config || !config.schedule_interval_minutes) {
           return 'N/A';
@@ -357,12 +414,11 @@ const App: React.FC = () => {
           return 'N/A';
       }
       
-      const lastUpdate = new Date(results[0].analysis_timestamp);
+      const lastUpdate = parseUTCDate(results[0].analysis_timestamp);
       lastUpdate.setMinutes(lastUpdate.getMinutes() + intervalMinutes);
       return lastUpdate.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit'});
   }
   
-  // NEW: Function to format the interval display, now more robust
   const formatInterval = (minutesStr: string | undefined): string => {
       if (minutesStr === undefined || minutesStr === null || minutesStr === '') {
           return '未知';
@@ -371,24 +427,19 @@ const App: React.FC = () => {
       if (isNaN(minutes) || minutes < 1) {
           return '未知';
       }
-
       if (minutes < 60) {
           return `${minutes} 分钟`;
       }
-      
       const hours = minutes / 60;
-      // Use Number.isInteger to correctly handle whole hours
       if (Number.isInteger(hours)) {
           return `${hours} 小时`;
       }
-      
-      // Use parseFloat to remove trailing .0, e.g., "1.50" -> 1.5
       return `${parseFloat(hours.toFixed(1))} 小时`;
   };
 
 
-  // --- Rendering logic with updated interval display ---
-  if (isLoading) {
+  // --- Rendering logic ---
+  if (isLoading && results.length === 0) { // Only show full-page loader on initial load
     return (
         <div className="bg-white dark:bg-gray-900 min-h-screen flex items-center justify-center">
             <Loader2 className="w-12 h-12 animate-spin text-cyan-500" />
@@ -430,13 +481,17 @@ const App: React.FC = () => {
       <main className="container mx-auto p-4 sm:p-6 lg:p-8">
           {config && <div className="flex items-center space-x-3 mb-6">
              <Settings className="w-6 h-6 text-slate-500 dark:text-gray-400"/>
-             {/* UPDATED: Uses formatInterval for display */}
              <h2 className="text-xl font-semibold">当前分析配置: 追踪 <span className="text-cyan-600 dark:text-cyan-400 font-bold">{config.trending_language}</span> 项目，每 <span className="text-cyan-600 dark:text-cyan-400 font-bold">{formatInterval(config.schedule_interval_minutes)}</span> 更新</h2>
           </div>}
            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
             {results.length > 0 ? results.map((project) => (
               <ProjectCard key={project.id} project={project} />
-            )) : <p>暂无分析结果...</p>}
+            )) : 
+            <div className="col-span-full text-center py-12">
+                <p className="text-slate-500 dark:text-gray-400">暂无分析结果，后台任务可能正在执行中...</p>
+                <p className="text-sm text-slate-400 dark:text-gray-500 mt-2">请等待下一次自动刷新或手动触发后台任务。</p>
+            </div>
+            }
           </div>
       </main>
       
